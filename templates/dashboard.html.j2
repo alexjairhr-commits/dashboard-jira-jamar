@@ -1,0 +1,346 @@
+{#- ===========================================================================
+    Dashboard Ejecutivo de Jira — Tema BLANCO, paleta Muebles Jamar.
+    Renderizado del lado del servidor (SSR): KPIs, gráficos (barras CSS) y
+    tabla se dibujan al generar el HTML, por lo que se ven SIN JavaScript.
+    El bloque <script> al final solo AÑADE interactividad (filtros/búsqueda)
+    cuando se abre en un navegador real.
+=========================================================================== -#}
+{%- set PALETTE = ['#E30613','#14213D','#F4A81D','#2E933C','#7A5AD8','#0EA5A4','#EF7C1B','#3B82F6','#D6336C','#8D6E63'] -%}
+
+{%- macro bars(dist, limit=99) -%}
+  {%- set mx = (dist.data | max) or 1 -%}
+  {%- for i in range(dist.labels | length) -%}
+    {%- if i < limit -%}
+    <div class="bar-row">
+      <span class="bar-label" title="{{ dist.labels[i] }}">{{ dist.labels[i] }}</span>
+      <span class="bar-track"><span class="bar-fill" style="width: {{ (dist.data[i] / mx * 100) | round(1) }}%; background: {{ PALETTE[i % (PALETTE | length)] }};"></span></span>
+      <span class="bar-val">{{ dist.data[i] }}</span>
+    </div>
+    {%- endif -%}
+  {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro trendchart(t) -%}
+  {%- set mx = ((t.created + t.closed) | max) or 1 -%}
+  <div class="trend">
+    {%- for i in range(t.labels | length) -%}
+    <div class="trend-col">
+      <div class="trend-bars">
+        <span class="tb created" style="height: {{ (t.created[i] / mx * 100) | round(1) }}%" title="Creadas: {{ t.created[i] }}"></span>
+        <span class="tb closed" style="height: {{ (t.closed[i] / mx * 100) | round(1) }}%" title="Cerradas: {{ t.closed[i] }}"></span>
+      </div>
+      <span class="trend-x">{{ t.labels[i] }}</span>
+    </div>
+    {%- endfor -%}
+  </div>
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ metrics.meta.title }}</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --panel-2: #f4f5f7;
+      --text: #1f2733;
+      --muted: #6b7280;
+      --border: #e4e7ec;
+      /* Paleta Muebles Jamar */
+      --jamar-red: #E30613;
+      --jamar-red-dark: #b3050f;
+      --jamar-navy: #14213D;
+      --jamar-gold: #F4A81D;
+      --green: #2E933C;
+      --amber: #F4A81D;
+      --red: #E30613;
+      --blue: #14213D;
+      --violet: #7A5AD8;
+      --shadow: 0 2px 10px rgba(20,33,61,.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      background: linear-gradient(135deg, var(--jamar-red), var(--jamar-red-dark));
+      padding: 22px 28px;
+      color: #fff;
+    }
+    header h1 { margin: 0; font-size: 1.5rem; letter-spacing: .2px; }
+    header .sub { color: #ffe3e3; font-size: .85rem; margin-top: 4px; }
+    .container { max-width: 1320px; margin: 0 auto; padding: 22px 20px 60px; }
+
+    /* ── Filtros ── */
+    .filters {
+      display: flex; flex-wrap: wrap; gap: 14px; align-items: end;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 16px 18px; margin-bottom: 22px; box-shadow: var(--shadow);
+    }
+    .filters .field { display: flex; flex-direction: column; gap: 5px; }
+    .filters label { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+    .filters select, .filters input {
+      background: #fff; color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; font-size: .9rem; min-width: 150px;
+    }
+    .filters button {
+      background: var(--jamar-red); color: #fff; border: none; cursor: pointer;
+      border-radius: 8px; padding: 9px 16px; font-size: .9rem; font-weight: 600;
+    }
+    .filters button:hover { background: var(--jamar-red-dark); }
+    .filters button.ghost { background: #fff; border: 1px solid var(--border); color: var(--muted); }
+    .filters button.ghost:hover { border-color: var(--jamar-red); color: var(--jamar-red); }
+    .js-only { display: none; }
+
+    /* ── KPI cards ── */
+    .kpis {
+      display: grid; gap: 16px; margin-bottom: 24px;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    }
+    .kpi {
+      background: var(--panel); border: 1px solid var(--border);
+      border-top: 4px solid var(--jamar-navy); border-radius: 14px;
+      padding: 16px 18px; box-shadow: var(--shadow);
+    }
+    .kpi .label { font-size: .76rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; font-weight: 600; }
+    .kpi .value { font-size: 2rem; font-weight: 700; margin-top: 6px; color: var(--jamar-navy); }
+    .kpi .unit { font-size: .9rem; color: var(--muted); font-weight: 500; }
+    .kpi.green  { border-top-color: var(--green); }
+    .kpi.amber  { border-top-color: var(--amber); }
+    .kpi.red    { border-top-color: var(--jamar-red); }
+    .kpi.navy   { border-top-color: var(--jamar-navy); }
+    .kpi.gold   { border-top-color: var(--jamar-gold); }
+    .kpi.violet { border-top-color: var(--violet); }
+    .badge { display:inline-block; margin-top:8px; padding:2px 10px; border-radius:999px; font-size:.72rem; font-weight:700; }
+    .badge.green { background: rgba(46,147,60,.12); color: var(--green); }
+    .badge.amber { background: rgba(244,168,29,.15); color: #9a6a00; }
+    .badge.red   { background: rgba(227,6,19,.10); color: var(--jamar-red); }
+
+    /* ── Grid de tarjetas ── */
+    .grid {
+      display: grid; gap: 18px; margin-bottom: 24px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 18px; box-shadow: var(--shadow);
+    }
+    .card h3 { margin: 0 0 14px; font-size: 1rem; color: var(--jamar-navy); }
+    .card.wide { grid-column: 1 / -1; }
+
+    /* ── Barras horizontales (gráficos) ── */
+    .bars { display: flex; flex-direction: column; }
+    .bar-row { display: grid; grid-template-columns: 130px 1fr 40px; gap: 10px; align-items: center; margin: 6px 0; font-size: .82rem; }
+    .bar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+    .bar-track { background: var(--panel-2); border-radius: 6px; height: 18px; overflow: hidden; }
+    .bar-fill { display:block; height: 100%; border-radius: 6px; min-width: 2px; transition: width .3s; }
+    .bar-val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+
+    /* ── Tendencias (columnas) ── */
+    .trend { display: flex; gap: 12px; align-items: flex-end; height: 220px; padding-top: 8px; overflow-x: auto; }
+    .trend-col { display: flex; flex-direction: column; align-items: center; flex: 1 0 44px; height: 100%; }
+    .trend-bars { display: flex; gap: 3px; align-items: flex-end; height: 100%; }
+    .tb { width: 14px; border-radius: 4px 4px 0 0; min-height: 2px; }
+    .tb.created { background: var(--jamar-navy); }
+    .tb.closed  { background: var(--green); }
+    .trend-x { font-size: .66rem; color: var(--muted); margin-top: 6px; white-space: nowrap; transform: rotate(-35deg); transform-origin: top left; height: 26px; }
+    .legend { display:flex; gap:16px; margin-bottom:6px; font-size:.78rem; color: var(--muted); }
+    .legend i { display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:5px; vertical-align:middle; }
+
+    /* ── Tabla ── */
+    .table-tools { display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    .table-tools input { flex:1; min-width:200px; background:#fff; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; }
+    .table-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); max-height: 620px; }
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { background: var(--jamar-navy); color: #fff; cursor: pointer; user-select: none; position: sticky; top: 0; font-weight: 600; }
+    th:hover { background: #0e1830; }
+    tbody tr:nth-child(even) { background: #fafbfc; }
+    tbody tr:hover { background: #fff5f5; }
+    td.summary { white-space: normal; max-width: 320px; }
+    .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+    .dot.new { background: var(--jamar-navy); }
+    .dot.indeterminate { background: var(--jamar-gold); }
+    .dot.done { background: var(--green); }
+    .pill { padding:2px 8px; border-radius:6px; font-size:.74rem; background: var(--panel-2); }
+    .pill.overdue { background: rgba(227,6,19,.10); color: var(--jamar-red); font-weight:700; }
+    .muted { color: var(--muted); }
+    footer { text-align:center; color: var(--muted); font-size:.8rem; padding: 24px; border-top: 1px solid var(--border); margin-top: 20px; }
+    .empty { text-align:center; padding:24px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{{ metrics.meta.title }}</h1>
+    <div class="sub">
+      Generado automáticamente el {{ metrics.meta.generated_at_human }}
+      · Zona horaria de referencia: {{ metrics.meta.timezone }}
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- ───────────────── Filtros (requieren navegador con JS) ───────────────── -->
+    <div class="filters">
+      <div class="field">
+        <label for="f-project">Proyecto</label>
+        <select id="f-project"><option value="">Todos</option></select>
+      </div>
+      <div class="field">
+        <label for="f-assignee">Persona asignada</label>
+        <select id="f-assignee"><option value="">Todos</option></select>
+      </div>
+      <div class="field">
+        <label for="f-reporter">Informador</label>
+        <select id="f-reporter"><option value="">Todos</option></select>
+      </div>
+      <div class="field">
+        <label for="f-activity">Actividad</label>
+        <select id="f-activity"><option value="">Todas</option></select>
+      </div>
+      <div class="field">
+        <label for="f-from">Creado desde</label>
+        <input type="date" id="f-from" />
+      </div>
+      <div class="field">
+        <label for="f-to">Creado hasta</label>
+        <input type="date" id="f-to" />
+      </div>
+      <button id="btn-apply" class="js-only">Aplicar filtros</button>
+      <button id="btn-reset" class="ghost js-only">Limpiar</button>
+    </div>
+
+    <!-- ───────────────── KPI cards (SSR) ───────────────── -->
+    {%- set c = metrics.kpis.compliance -%}
+    {%- if c >= 85 -%}{% set sem = 'green' %}{% elif c >= 60 -%}{% set sem = 'amber' %}{% else -%}{% set sem = 'red' %}{%- endif -%}
+    <div class="kpis" id="kpis">
+      <div class="kpi navy"><div class="label">Total tickets</div><div class="value">{{ metrics.kpis.total }}</div></div>
+      <div class="kpi amber"><div class="label">Abiertos</div><div class="value">{{ metrics.kpis.open }}</div></div>
+      <div class="kpi green"><div class="label">Cerrados</div><div class="value">{{ metrics.kpis.closed }}</div></div>
+      <div class="kpi violet"><div class="label">En progreso</div><div class="value">{{ metrics.kpis.in_progress }}</div></div>
+      <div class="kpi red"><div class="label">Vencidos (vencimiento)</div><div class="value">{{ metrics.kpis.overdue }}</div></div>
+      <div class="kpi gold"><div class="label">Vencidos (estimada L4)</div><div class="value">{{ metrics.kpis.overdue_l4 }}</div></div>
+      <div class="kpi {{ sem }}"><div class="label">Cumplimiento</div><div class="value">{{ metrics.kpis.compliance }}<span class="unit"> %</span></div><span class="badge {{ sem }}">{{ 'Óptimo' if sem == 'green' else ('Atención' if sem == 'amber' else 'Crítico') }}</span></div>
+      <div class="kpi navy"><div class="label">T. prom. resolución</div><div class="value">{{ metrics.kpis.avg_resolution_days }}<span class="unit"> días</span></div></div>
+    </div>
+
+    <!-- ───────────────── Gráficos (SSR, barras CSS) ───────────────── -->
+    <div class="grid">
+      <div class="card"><h3>Tickets por estado</h3><div class="bars" id="bars-status">{{ bars(metrics.by_status) }}</div></div>
+      <div class="card"><h3>Tickets por prioridad</h3><div class="bars" id="bars-priority">{{ bars(metrics.by_priority) }}</div></div>
+      <div class="card"><h3>Tickets por actividad</h3><div class="bars" id="bars-activity">{{ bars(metrics.by_activity) }}</div></div>
+      <div class="card"><h3>Tickets por resolución</h3><div class="bars" id="bars-resolution">{{ bars(metrics.by_resolution) }}</div></div>
+      <div class="card"><h3>Top 10 personas asignadas</h3><div class="bars" id="bars-assignee">{{ bars(metrics.by_assignee, 10) }}</div></div>
+      <div class="card"><h3>Top 10 informadores</h3><div class="bars" id="bars-reporter">{{ bars(metrics.by_reporter, 10) }}</div></div>
+      <div class="card wide">
+        <h3>Tendencia semanal (creadas vs cerradas)</h3>
+        <div class="legend"><span><i style="background:var(--jamar-navy)"></i>Creadas</span><span><i style="background:var(--green)"></i>Cerradas</span></div>
+        <div id="trend-weekly">{{ trendchart(metrics.trend_weekly) }}</div>
+      </div>
+      <div class="card wide">
+        <h3>Tendencia mensual (creadas vs cerradas)</h3>
+        <div class="legend"><span><i style="background:var(--jamar-navy)"></i>Creadas</span><span><i style="background:var(--green)"></i>Cerradas</span></div>
+        <div id="trend-monthly">{{ trendchart(metrics.trend_monthly) }}</div>
+      </div>
+    </div>
+
+    <!-- ───────────────── Tabla (SSR) ───────────────── -->
+    <div class="card">
+      <h3>Detalle de tickets <span class="muted" id="row-count">({{ metrics.table | length }})</span></h3>
+      <div class="table-tools">
+        <input type="text" id="search" class="js-only" placeholder="Buscar por clave, resumen, estado, responsable…" />
+      </div>
+      <div class="table-wrap">
+        <table id="table">
+          <thead>
+            <tr>
+              <th data-k="key">Clave</th>
+              <th data-k="summary">Resumen</th>
+              <th data-k="activity">Actividad</th>
+              <th data-k="assignee">Persona asignada</th>
+              <th data-k="reporter">Informador</th>
+              <th data-k="priority">Prioridad</th>
+              <th data-k="status">Estado</th>
+              <th data-k="resolution">Resolución</th>
+              <th data-k="created">Creada</th>
+              <th data-k="updated">Actualizada</th>
+              <th data-k="duedate">Vencimiento</th>
+              <th data-k="start">Fecha inicio</th>
+              <th data-k="l4">Estimada L4</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            {%- for r in metrics.table[:200] -%}
+            <tr>
+              <td>{{ r.key }}</td>
+              <td class="summary">{{ r.summary }}</td>
+              <td>{{ r.activity }}</td>
+              <td>{{ r.assignee }}</td>
+              <td>{{ r.reporter }}</td>
+              <td>{{ r.priority }}</td>
+              <td><span class="dot {{ r.status_category }}"></span>{{ r.status }}</td>
+              <td>{{ r.resolution }}</td>
+              <td>{{ r.created }}</td>
+              <td>{{ r.updated }}</td>
+              <td>{% if r.duedate %}<span class="pill {{ 'overdue' if r.overdue else '' }}">{{ r.duedate }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+              <td>{{ r.start or '—' }}</td>
+              <td>{% if r.l4 %}<span class="pill {{ 'overdue' if r.overdue_l4 else '' }}">{{ r.l4 }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+            </tr>
+            {%- endfor -%}
+          </tbody>
+        </table>
+      </div>
+      {%- if metrics.table | length > 200 -%}
+      <p class="muted" style="margin-top:10px; font-size:.8rem;">Mostrando las primeras 200 filas en la vista estática. Usa los filtros (en un navegador) para explorar todas.</p>
+      {%- endif -%}
+    </div>
+
+    <footer>
+      Dashboard generado con Python · Jinja2 · Publicado en GitHub Pages · Paleta Muebles Jamar.
+      Última actualización: {{ metrics.meta.generated_at_human }}.
+    </footer>
+  </div>
+
+  <!-- ───────────────── Datos para la capa interactiva ───────────────── -->
+  <script id="data" type="application/json">{{ metrics_json | safe }}</script>
+  <script>
+  (function () {
+    "use strict";
+    var dataEl = document.getElementById("data");
+    if (!dataEl) return;
+    var DATA = JSON.parse(dataEl.textContent);
+    var ALL = DATA.table || [];
+    var PALETTE = ['#E30613','#14213D','#F4A81D','#2E933C','#7A5AD8','#0EA5A4','#EF7C1B','#3B82F6','#D6336C','#8D6E63'];
+    var el = function (id) { return document.getElementById(id); };
+
+    // Mostrar controles que requieren JS.
+    Array.prototype.forEach.call(document.querySelectorAll('.js-only'), function (n) { n.style.display = ''; });
+
+    function fillSelect(id, values) {
+      var sel = el(id); if (!sel) return;
+      values.forEach(function (v) { var o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+    }
+    fillSelect('f-project', DATA.filters.projects || []);
+    fillSelect('f-assignee', DATA.filters.assignees || []);
+    fillSelect('f-reporter', DATA.filters.reporters || []);
+    fillSelect('f-activity', DATA.filters.activities || []);
+
+    function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+    function applyFilters() {
+      var proj = el('f-project').value, asg = el('f-assignee').value, rep = el('f-reporter').value,
+          act = el('f-activity').value, from = el('f-from').value, to = el('f-to').value,
+          q = (el('search').value || '').toLowerCase();
+      return ALL.filter(function (r) {
+        if (proj && r.project !== proj) return false;
+        if (asg && r.assignee !== asg) return false;
+        if (rep && r.reporter !== rep) return false;
+        if (act && r.activity !== act) return false;
+        if (from && (r.created || '') 

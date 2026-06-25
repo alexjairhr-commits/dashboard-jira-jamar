@@ -1,0 +1,78 @@
+name: Generar y publicar Dashboard de Jira
+
+# ──────────────────────────────────────────────────────────────────────
+#  Se ejecuta:
+#   - Automáticamente todos los días a las 06:00 UTC (01:00 Colombia).
+#   - Manualmente desde la pestaña Actions (workflow_dispatch).
+#   - En cada push a main (útil para probar cambios de código).
+# ──────────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+# Permisos mínimos necesarios para publicar en GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Evita ejecuciones solapadas; cancela la anterior si llega una nueva.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────── 1) Construir el dashboard ───────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Generar dashboard desde Jira
+        env:
+          JIRA_BASE_URL:     ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL:        ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN:    ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEYS: ${{ secrets.JIRA_PROJECT_KEYS }}
+          JIRA_LOOKBACK_DAYS: ${{ vars.JIRA_LOOKBACK_DAYS }}
+          DASHBOARD_TITLE:   ${{ vars.DASHBOARD_TITLE }}
+          DASHBOARD_TIMEZONE: ${{ vars.DASHBOARD_TIMEZONE }}
+        run: python -m src.main
+
+      - name: Subir logs como artefacto (para diagnóstico)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-logs
+          path: logs/
+          retention-days: 7
+
+      - name: Preparar artefacto de Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  # ─────────────── 2) Desplegar a GitHub Pages ───────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

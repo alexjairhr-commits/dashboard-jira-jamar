@@ -1,0 +1,5 @@
+# ── Dependencias del proyecto (todas gratuitas / open source) ──
+requests==2.32.3        # Cliente HTTP para la API REST de Jira
+Jinja2==3.1.4           # Motor de plantillas para generar el HTML
+python-dotenv==1.0.1    # Carga variables desde el archivo .env en local
+tenacity==9.0.0         # Reintentos automáticos con backoff exponencial

@@ -1,0 +1,26 @@
+# ── Secretos y entorno ──
+.env
+*.env
+!.env.example
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ── Logs (se regeneran en cada ejecución) ──
+logs/*.log
+
+# ── Datos crudos opcionales ──
+data/*.json
+
+# ── Sistema operativo / editores ──
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
