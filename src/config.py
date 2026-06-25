@@ -61,7 +61,7 @@ class Config:
     timezone: str = "America/Bogota"
     # Nombres visibles de campos personalizados (se resuelven a customfield_XXXXX).
     field_activity: str = "Actividad"
-    field_start: str = "Fecha inicio"
+    field_start: str = "Fecha de inicio"
     field_l4: str = "Fecha estimada L4"
     # Criterio de "vencido": "duedate" (Fecha de vencimiento) o "l4" (Fecha estimada L4).
     overdue_basis: str = "duedate"
@@ -97,7 +97,7 @@ def load_config() -> Config:
         dashboard_title=os.getenv("DASHBOARD_TITLE", "Dashboard Ejecutivo de Gestión - Jira").strip(),
         timezone=os.getenv("DASHBOARD_TIMEZONE", "America/Bogota").strip() or "America/Bogota",
         field_activity=os.getenv("JIRA_FIELD_ACTIVITY", "Actividad").strip(),
-        field_start=os.getenv("JIRA_FIELD_START", "Fecha inicio").strip(),
+        field_start=os.getenv("JIRA_FIELD_START", "Fecha de inicio").strip(),
         field_l4=os.getenv("JIRA_FIELD_L4", "Fecha estimada L4").strip(),
         overdue_basis=(os.getenv("JIRA_OVERDUE_BASIS", "duedate").strip().lower() or "duedate"),
     )

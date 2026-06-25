@@ -15,6 +15,7 @@ Caracteristicas:
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import Any, Dict, Iterator, List, Optional
 
 import requests
@@ -29,6 +30,13 @@ from tenacity import (
 from .config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _norm_name(s):
+    """Normaliza un nombre: minusculas, sin tildes, espacios colapsados."""
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    return " ".join(s.split())
 
 STANDARD_FIELDS = [
     "summary",
@@ -103,18 +111,27 @@ class JiraClient:
         return self._request("GET", path, params=params or {})
 
     def resolve_custom_fields(self) -> None:
-        """Consulta /rest/api/3/field y mapea los nombres configurados a sus IDs."""
+        """Consulta /rest/api/3/field y mapea los nombres configurados a sus IDs.
+
+        El emparejamiento es tolerante a tildes, mayusculas y espacios, e incluye
+        un respaldo por coincidencia parcial. Tambien registra los campos
+        candidatos para diagnostico.
+        """
         try:
             fields = self._get("/rest/api/3/field")
         except JiraApiError as e:
             logger.warning("No se pudieron listar los campos de Jira: %s", e)
             return
 
-        name_to_id: Dict[str, Any] = {}
+        norm_to_id = {}
         for f in fields:
-            nm = (f.get("name") or "").strip().lower()
-            if nm and nm not in name_to_id:
-                name_to_id[nm] = f.get("id")
+            nm = f.get("name") or ""
+            k = _norm_name(nm)
+            if k and k not in norm_to_id:
+                norm_to_id[k] = f.get("id")
+            # Diagnostico: muestra candidatos relevantes
+            if any(t in k for t in ("activ", "inicio", "start", "l4", "estimada")):
+                logger.info("Campo disponible en Jira: '%s' -> %s", nm, f.get("id"))
 
         wanted = {
             "activity": self.config.field_activity,
@@ -124,12 +141,19 @@ class JiraClient:
         for slot, display_name in wanted.items():
             if not display_name:
                 continue
-            fid = name_to_id.get(display_name.strip().lower())
+            key = _norm_name(display_name)
+            fid = norm_to_id.get(key)
+            if not fid:
+                for k, v in norm_to_id.items():
+                    if k and (k.startswith(key) or key.startswith(k) or key in k):
+                        fid = v
+                        break
             self.custom_ids[slot] = fid
             if fid:
                 logger.info("Campo '%s' resuelto a %s", display_name, fid)
             else:
                 logger.warning("Campo personalizado '%s' no encontrado en Jira.", display_name)
+
 
     def _request_fields(self) -> List[str]:
         ids = list(STANDARD_FIELDS)
