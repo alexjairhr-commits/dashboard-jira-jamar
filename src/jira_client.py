@@ -1,19 +1,15 @@
 """
 jira_client.py
 ==============
-Cliente para la API REST de Jira Cloud (v3).
+Cliente para la API REST de Jira Cloud (v3), usando el endpoint nuevo
+/rest/api/3/search/jql (el anterior /rest/api/3/search fue eliminado).
 
-Características:
-- Autenticación HTTP Basic (email + API token).
-- Resolución AUTOMÁTICA de campos personalizados por su nombre visible
-  (p. ej. "Fecha estimada L4" -> "customfield_10042"), consultando
-  /rest/api/3/field. Así el proyecto funciona en cualquier Jira sin que
-  tengas que averiguar los IDs internos.
-- Búsqueda por JQL con paginación automática.
-- Reintentos automáticos con backoff exponencial (tenacity) ante fallos
-  de red o respuestas 429/5xx.
-- Normalización de cada issue a un diccionario plano y predecible.
-- Logging detallado de cada paso.
+Caracteristicas:
+- Autenticacion HTTP Basic (email + API token).
+- Resolucion automatica de campos personalizados por su nombre visible.
+- Paginacion con nextPageToken (modelo nuevo de la API).
+- Reintentos automaticos con backoff exponencial ante fallos de red o 429/5xx.
+- Normalizacion de cada issue a un diccionario plano.
 """
 
 from __future__ import annotations
@@ -34,7 +30,6 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
-# Campos estándar que pedimos siempre.
 STANDARD_FIELDS = [
     "summary",
     "issuetype",
@@ -50,7 +45,6 @@ STANDARD_FIELDS = [
     "project",
 ]
 
-# Excepciones de red que justifican un reintento.
 _RETRYABLE = (
     requests.exceptions.ConnectionError,
     requests.exceptions.Timeout,
@@ -63,7 +57,7 @@ class JiraApiError(RuntimeError):
 
 
 class JiraClient:
-    """Cliente ligero y robusto para Jira Cloud."""
+    """Cliente ligero y robusto para Jira Cloud (endpoint search/jql)."""
 
     def __init__(self, config: Config, timeout: int = 30) -> None:
         self.config = config
@@ -75,32 +69,27 @@ class JiraClient:
         )
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
         self.session.mount("https://", adapter)
-
-        # Mapa nombre_personalizado -> customfield_id (se llena en resolve_custom_fields)
         self.custom_ids: Dict[str, Optional[str]] = {
             "activity": None,
             "start": None,
             "l4": None,
         }
 
-    # ------------------------------------------------------------------ #
-    # Peticiones de bajo nivel con reintentos
-    # ------------------------------------------------------------------ #
     @retry(
         reraise=True,
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception_type(_RETRYABLE),
     )
-    def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
+    def _request(self, method: str, path: str, **kwargs) -> Any:
         url = f"{self.config.base_url}{path}"
         resp = self.session.request(method, url, timeout=self.timeout, **kwargs)
 
         if resp.status_code == 429 or resp.status_code >= 500:
-            logger.warning("Respuesta %s de Jira; se reintentará.", resp.status_code)
-            raise requests.exceptions.ConnectionError(f"Jira devolvió {resp.status_code}")
+            logger.warning("Respuesta %s de Jira; se reintentara.", resp.status_code)
+            raise requests.exceptions.ConnectionError(f"Jira devolvio {resp.status_code}")
         if resp.status_code == 401:
-            raise JiraApiError("Autenticación fallida (401). Verifica JIRA_EMAIL y JIRA_API_TOKEN.")
+            raise JiraApiError("Autenticacion fallida (401). Verifica JIRA_EMAIL y JIRA_API_TOKEN.")
         if resp.status_code == 403:
             raise JiraApiError("Acceso denegado (403). La cuenta no tiene permiso sobre el proyecto.")
         if resp.status_code >= 400:
@@ -113,19 +102,15 @@ class JiraClient:
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return self._request("GET", path, params=params or {})
 
-    # ------------------------------------------------------------------ #
-    # Resolución de campos personalizados por nombre
-    # ------------------------------------------------------------------ #
     def resolve_custom_fields(self) -> None:
         """Consulta /rest/api/3/field y mapea los nombres configurados a sus IDs."""
         try:
-            fields = self._get("/rest/api/3/field")  # lista de todos los campos
+            fields = self._get("/rest/api/3/field")
         except JiraApiError as e:
             logger.warning("No se pudieron listar los campos de Jira: %s", e)
             return
 
-        # name (en minúsculas) -> id
-        name_to_id = {}
+        name_to_id: Dict[str, Any] = {}
         for f in fields:
             nm = (f.get("name") or "").strip().lower()
             if nm and nm not in name_to_id:
@@ -153,9 +138,6 @@ class JiraClient:
                 ids.append(fid)
         return ids
 
-    # ------------------------------------------------------------------ #
-    # Búsqueda JQL con paginación
-    # ------------------------------------------------------------------ #
     def _build_jql(self) -> str:
         keys = ", ".join(f'"{k}"' for k in self.config.project_keys)
         jql = (
@@ -168,37 +150,31 @@ class JiraClient:
         return jql
 
     def iter_issues(self) -> Iterator[Dict[str, Any]]:
+        """Itera todos los issues usando el endpoint nuevo /search/jql con nextPageToken."""
         jql = self._build_jql()
         request_fields = self._request_fields()
-        start_at = 0
-        total = None
+        next_page_token: Optional[str] = None
         fetched = 0
 
         while True:
-            payload = {
+            payload: Dict[str, Any] = {
                 "jql": jql,
-                "startAt": start_at,
                 "maxResults": self.config.page_size,
                 "fields": request_fields,
             }
-            data = self._post("/rest/api/3/search", payload)
+            if next_page_token:
+                payload["nextPageToken"] = next_page_token
 
-            if total is None:
-                total = data.get("total", 0)
-                logger.info("Jira reporta %d issues coincidentes.", total)
-
-            issues = data.get("issues", [])
-            if not issues:
-                break
-
+            data = self._post("/rest/api/3/search/jql", payload)
+            issues = data.get("issues", []) or []
             for issue in issues:
                 yield self._normalize(issue)
 
             fetched += len(issues)
-            start_at += len(issues)
-            logger.info("Descargados %d/%s issues.", fetched, total)
+            logger.info("Descargados %d issues.", fetched)
 
-            if fetched >= (total or 0):
+            next_page_token = data.get("nextPageToken")
+            if data.get("isLast") or not next_page_token or not issues:
                 break
 
     def fetch_all(self) -> List[Dict[str, Any]]:
@@ -208,9 +184,6 @@ class JiraClient:
         logger.info("Total de issues normalizados: %d", len(issues))
         return issues
 
-    # ------------------------------------------------------------------ #
-    # Normalización
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _extract_value(raw: Any) -> Optional[str]:
         """Extrae un valor legible de un campo que puede ser string, dict o lista."""
@@ -219,7 +192,6 @@ class JiraClient:
         if isinstance(raw, str):
             return raw
         if isinstance(raw, dict):
-            # campos tipo select/option: {"value": "..."} o {"name": "..."}
             return raw.get("value") or raw.get("name") or raw.get("displayName")
         if isinstance(raw, list) and raw:
             return ", ".join(filter(None, (JiraClient._extract_value(x) for x in raw)))
