@@ -288,6 +288,7 @@
       });
     });
     function render() {
+      try {
       var rows = applyFilters();
       renderKpis(rows);
       renderBars('bars-status', countBy(rows,'status'));
@@ -299,7 +300,12 @@
       renderTrend('trend-weekly', trendData(rows,'week'));
       renderTrend('trend-monthly', trendData(rows,'month'));
       renderTable(rows);
+      } catch (e) { if (window.console) console.error('Error al filtrar:', e); }
     }
+    // Filtrado automatico: al cambiar cualquier filtro se aplica al instante.
+    ['f-project','f-assignee','f-reporter','f-activity','f-from','f-to'].forEach(function(id){
+      var n = el(id); if (n) n.addEventListener('change', render);
+    });
     el('btn-apply').addEventListener('click', render);
     el('search').addEventListener('input', render);
     el('btn-reset').addEventListener('click', function () {
