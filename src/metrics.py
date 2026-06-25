@@ -1,11 +1,11 @@
 """
 metrics.py
 ==========
-Cálculo de todos los indicadores de gestión a partir de la lista de
+Calculo de todos los indicadores de gestion a partir de la lista de
 issues normalizados que entrega jira_client.
 
-No depende de Jira ni de la red: es lógica pura y por tanto fácil de
-testear. Devuelve un único diccionario `metrics` listo para inyectar
+No depende de Jira ni de la red: es logica pura y por tanto facil de
+testear. Devuelve un unico diccionario `metrics` listo para inyectar
 en la plantilla HTML como JSON.
 """
 
@@ -19,21 +19,16 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------- #
-# Utilidades de fechas
-# --------------------------------------------------------------------- #
 def _parse(dt: Optional[str]) -> Optional[datetime]:
     """Parsea una fecha ISO de Jira (con o sin zona) a datetime aware UTC."""
     if not dt:
         return None
     try:
-        # Jira usa formato tipo 2026-06-25T10:30:00.000-0500
         d = datetime.fromisoformat(dt.replace("Z", "+00:00"))
         if d.tzinfo is None:
             d = d.replace(tzinfo=timezone.utc)
         return d.astimezone(timezone.utc)
     except (ValueError, TypeError):
-        # Algunos campos (duedate) llegan como 'YYYY-MM-DD'
         try:
             d = datetime.strptime(dt[:10], "%Y-%m-%d")
             return d.replace(tzinfo=timezone.utc)
@@ -45,9 +40,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --------------------------------------------------------------------- #
-# Clasificación de estado
-# --------------------------------------------------------------------- #
 def _is_done(issue: Dict[str, Any]) -> bool:
     return issue.get("status_category") == "done"
 
@@ -57,32 +49,24 @@ def _is_in_progress(issue: Dict[str, Any]) -> bool:
 
 
 def _is_open(issue: Dict[str, Any]) -> bool:
-    # "Abierto" = nuevo o en progreso (todo lo que no está terminado).
     return not _is_done(issue)
 
 
 def _is_overdue_on(issue: Dict[str, Any], field: str) -> bool:
-    """Vencido respecto a un campo de fecha dado y solo si no está terminado."""
+    """Vencido respecto a un campo de fecha dado y solo si no esta terminado."""
     if _is_done(issue):
         return False
     d = _parse(issue.get(field))
     return bool(d and d < _now())
 
 
-# --------------------------------------------------------------------- #
-# Cálculo principal
-# --------------------------------------------------------------------- #
 def compute_metrics(
     issues: List[Dict[str, Any]],
     title: str,
     timezone_name: str,
     overdue_basis: str = "duedate",
 ) -> Dict[str, Any]:
-    """Calcula el set completo de indicadores.
-
-    overdue_basis: campo usado para el KPI principal de "vencidos".
-        "duedate" -> Fecha de vencimiento;  "l4" -> Fecha estimada L4.
-    """
+    """Calcula el set completo de indicadores."""
     basis_field = "l4" if overdue_basis == "l4" else "duedate"
 
     total = len(issues)
@@ -98,10 +82,8 @@ def compute_metrics(
     n_overdue = len(overdue)
     n_overdue_l4 = len(overdue_l4)
 
-    # Cumplimiento (%) = cerrados / total.
     compliance = round((n_done / total) * 100, 1) if total else 0.0
 
-    # Tiempo promedio de resolución (días) sobre los issues cerrados.
     resolution_days: List[float] = []
     for i in done:
         created = _parse(i.get("created"))
@@ -110,7 +92,6 @@ def compute_metrics(
             resolution_days.append((resolved - created).total_seconds() / 86400.0)
     avg_resolution = round(sum(resolution_days) / len(resolution_days), 1) if resolution_days else 0.0
 
-    # Distribuciones (orden descendente por cantidad).
     by_assignee = _counter_to_sorted([i["assignee"] for i in issues])
     by_reporter = _counter_to_sorted([i.get("reporter", "Sin informador") for i in issues])
     by_priority = _counter_to_sorted([i["priority"] for i in issues])
@@ -120,11 +101,9 @@ def compute_metrics(
     by_resolution = _counter_to_sorted([i.get("resolution", "Sin resolver") for i in issues])
     by_project = _counter_to_sorted([i["project"] for i in issues])
 
-    # Tendencias semanal y mensual (creados vs cerrados).
     weekly = _trend(issues, "%Y-S%W", weeks=12)
     monthly = _trend(issues, "%Y-%m", weeks=None, months=12)
 
-    # Tabla detallada (limitada para mantener el HTML ligero).
     table = _build_table(issues)
 
     metrics = {
@@ -164,17 +143,13 @@ def compute_metrics(
         },
     }
     logger.info(
-        "Métricas: total=%d abiertos=%d cerrados=%d en_progreso=%d vencidos=%d cumplimiento=%.1f%%",
+        "Metricas: total=%d abiertos=%d cerrados=%d en_progreso=%d vencidos=%d cumplimiento=%.1f%%",
         total, n_open, n_done, n_in_progress, n_overdue, compliance,
     )
     return metrics
 
 
-# --------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------- #
 def _counter_to_sorted(values: List[str]) -> Dict[str, List]:
-    """Devuelve {'labels': [...], 'data': [...]} ordenado desc por cantidad."""
     counter = Counter(values)
     items = counter.most_common()
     return {
@@ -184,7 +159,6 @@ def _counter_to_sorted(values: List[str]) -> Dict[str, List]:
 
 
 def _trend(issues, fmt: str, weeks: Optional[int] = 12, months: Optional[int] = None) -> Dict[str, List]:
-    """Serie temporal de creados vs cerrados agrupada por periodo."""
     created_counter: Dict[str, int] = defaultdict(int)
     closed_counter: Dict[str, int] = defaultdict(int)
 
@@ -197,4 +171,39 @@ def _trend(issues, fmt: str, weeks: Optional[int] = 12, months: Optional[int] = 
             closed_counter[r.strftime(fmt)] += 1
 
     periods = sorted(set(created_counter) | set(closed_counter))
-    window = 
+    window = months if months else weeks
+    if window:
+        periods = periods[-window:]
+
+    return {
+        "labels": periods,
+        "created": [created_counter.get(p, 0) for p in periods],
+        "closed": [closed_counter.get(p, 0) for p in periods],
+    }
+
+
+def _build_table(issues: List[Dict[str, Any]], limit: int = 5000) -> List[Dict[str, Any]]:
+    rows = []
+    for i in issues[:limit]:
+        rows.append({
+            "key": i["key"],
+            "summary": i["summary"][:120],
+            "type": i["type"],
+            "activity": i.get("activity", "Sin actividad"),
+            "status": i["status"],
+            "status_category": i["status_category"],
+            "resolution": i.get("resolution", "Sin resolver"),
+            "priority": i["priority"],
+            "assignee": i["assignee"],
+            "reporter": i.get("reporter", "Sin informador"),
+            "project": i["project"],
+            "created": (i.get("created") or "")[:10],
+            "updated": (i.get("updated") or "")[:10],
+            "start": (i.get("start") or "")[:10],
+            "resolved": (i.get("resolved") or "")[:10],
+            "duedate": (i.get("duedate") or "")[:10],
+            "l4": (i.get("l4") or "")[:10],
+            "overdue": _is_overdue_on(i, "duedate"),
+            "overdue_l4": _is_overdue_on(i, "l4"),
+        })
+    return rows
